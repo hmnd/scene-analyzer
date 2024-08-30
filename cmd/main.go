@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -134,6 +135,7 @@ func main() {
 	totalPoints := 0
 
 	totalPages := 1
+	seen := []string{}
 	for i := 0; i < totalPages; i++ {
 		resp, err := client.R().SetHeader("content-type", "application/json").SetBody(PointsHistoryReq{
 			Types:      []PointType{PointTypeEarn},
@@ -157,9 +159,10 @@ func main() {
 		totalPages = int(math.Ceil(float64(history.Data.TotalItemCount / PAGE_SIZE)))
 
 		for _, point := range history.Data.PointsTransactions {
-			if !strings.EqualFold(string(point.PointType), string(PointTypeEarn)) {
+			if slices.Index(seen, point.PointID) > -1 || !strings.EqualFold(string(point.PointType), string(PointTypeEarn)) {
 				continue
 			}
+			seen = append(seen, point.PointID)
 			points, err := strconv.Atoi(point.Points)
 			if err != nil {
 				log.Print(err)
