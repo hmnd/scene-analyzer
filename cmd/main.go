@@ -1,9 +1,12 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
+	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-resty/resty/v2"
@@ -97,7 +100,10 @@ type PointsHistoryReq struct {
 	ToDate     string      `json:"ToDate"`
 	Page       int         `json:"Page"`
 	Sort       string      `json:"Sort"`
+	Limit      int         `json:"Limit"`
 }
+
+const PAGE_SIZE = 100
 
 func main() {
 	err := dotenv.LoadConfig()
@@ -111,60 +117,60 @@ func main() {
 	client.SetHeader("authorization", fmt.Sprintf("Bearer %s", dotenv.GetString("SCENE_API_TOKEN")))
 	client.SetHeader("origin", "https://www.sceneplus.ca")
 
-	minDate, _ := time.Parse(time.RFC3339, "2023-01-01T00:00:00-08:00")
-	maxDate, _ := time.Parse(time.RFC3339, "2024-01-01T00:00:00-08:00")
+	startDateStr := flag.String("start-date", "", "Start of transaction date range")
+	endDateStr := flag.String("end-date", time.Now().Format(time.DateOnly), "End of transaction date range")
+	flag.Parse()
+
+	minDate, err := time.Parse(time.DateOnly, *startDateStr)
+	if err != nil {
+		log.Fatal("Invalid start date")
+	}
+	maxDate, err := time.Parse(time.DateOnly, *endDateStr)
+	if err != nil {
+		log.Fatal("Invalid end date")
+	}
 
 	pointsByCategory := map[Category]int{}
-	for i := 0; true; i++ {
+	totalPoints := 0
+
+	totalPages := 1
+	for i := 0; i < totalPages; i++ {
 		resp, err := client.R().SetHeader("content-type", "application/json").SetBody(PointsHistoryReq{
 			Types:      []PointType{PointTypeEarn},
 			Categories: []Category{CategoryAll},
 			Cards:      []string{"ALL"},
-			FromDate:   "1900-01-01T00:00:00-08:00",
-			ToDate:     time.Now().Format(time.RFC3339),
-			Sort:       "DESC",
+			FromDate:   minDate.Format(time.DateOnly),
+			ToDate:     maxDate.Format(time.DateOnly),
+			Sort:       "ASC",
 			Page:       i + 1,
+			Limit:      PAGE_SIZE,
 		}).SetResult(&PointsHistoryResp{}).Post("/api/customer/points/history")
-		if err != nil || resp.StatusCode() != 200 {
+		if err != nil {
 			log.Fatal(err)
+		}
+		if resp.StatusCode() != 200 {
+			log.Fatal(strings.Join([]string{"failed request", fmt.Sprint(resp.StatusCode()), string(resp.Body())}, "\n"))
 		}
 
 		history := resp.Result().(*PointsHistoryResp)
 
-		isLast := false
+		totalPages = int(math.Ceil(float64(history.Data.TotalItemCount / PAGE_SIZE)))
+
 		for _, point := range history.Data.PointsTransactions {
-			if point.PointType != PointTypeEarn {
+			if !strings.EqualFold(string(point.PointType), string(PointTypeEarn)) {
 				continue
 			}
-			transDate, err := time.Parse(time.RFC3339, point.TransactionDate)
+			points, err := strconv.Atoi(point.Points)
 			if err != nil {
 				log.Print(err)
 			}
-			if transDate.Before(minDate) {
-				log.Println("Last trans date:", point.Description, point.TransactionDate, transDate, isLast)
-				isLast = true
-			}
-			if isLast || transDate.After(maxDate) {
-				log.Println("Skipping page", i+1)
-				break
-			}
-			if point.PointType == PointTypeEarn {
-				points, err := strconv.Atoi(point.Points)
-				if err != nil {
-					log.Print(err)
-				}
-				pointsByCategory[point.Categories[0]] += points
-			}
-		}
-		if isLast {
-			break
+			pointsByCategory[point.Categories[0]] += points
+			totalPoints += points
 		}
 	}
 
-	totalPoints := 0
 	for category, points := range pointsByCategory {
-		totalPoints += points
-		log.Println(category, points, fmt.Sprintf("%d", points/100))
+		log.Println(category, fmt.Sprintf("%.2f%%", float64(points)/float64(totalPoints)*100), points, fmt.Sprintf("$%.2f", float64(points)/100))
 	}
-	log.Println("Total earned points:", totalPoints, fmt.Sprintf("%d", totalPoints/100))
+	log.Println("TOTAL", totalPoints, fmt.Sprintf("$%.2f", float64(totalPoints)/100))
 }
